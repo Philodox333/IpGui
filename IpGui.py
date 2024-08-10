@@ -1,134 +1,221 @@
 # IpGui.py
 # @Philodox333
 
-                # import
-import tkinter as tk
+# import
+import sys
 import subprocess
-import os
 import socket
+from PyQt6.QtWidgets import QApplication, QMainWindow, QTextEdit, QVBoxLayout, QPushButton, QWidget, QHBoxLayout
+from PyQt6.QtGui import QFont
+from PyQt6.QtCore import QThread, pyqtSignal, QTimer, Qt
 
-                # functions
-def getOwnIp():
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.settimeout(1)
-        s.connect(('8.8.8.8', 80))
-        iPAddress = s.getsockname()[0]
-    except Exception as ex:
-        textBox.insert(tk.END, f'Not able to determine your own IP address: {ex}\n')
-        return None
-    finally:
-        s.close()
-    return iPAddress
+#main
+class CommandThread(QThread):
+    output_signal = pyqtSignal(str)
 
-def getNetworkPrefix(iPAddress):
-    return '.'.join(iPAddress.split('.')[:-1])
+    def __init__(self, command):
+        super().__init__()
+        self.command = command
 
-def scanNetwork():
-    ownIP = getOwnIp()
-    if not ownIP:
-        textBox.insert(tk.END, f'Program is being shut down because your own IP could not be determined.\n')
-        return
+    def run(self):
+        try:
+            result = subprocess.run(self.command, capture_output=True, text=True, encoding='cp850')
+            self.output_signal.emit(result.stdout)
+        except Exception as ex:
+            self.output_signal.emit(f'Error: {ex}')
 
-    networkPrefix = getNetworkPrefix(ownIP)
-    activeIPs = []
+class NetworkScanThread(QThread):
+    output_signal = pyqtSignal(str)
+    status_signal = pyqtSignal(str)
 
-    textBox.insert(tk.END, f'Scanning IP range {networkPrefix}.1 to {networkPrefix}.254 ...\n')
-    textBox.update_idletasks()
+    def __init__(self):
+        super().__init__()
+        self.timer = QTimer()
+        self.timer.timeout.connect(self.updateStatus)
 
-    for i in range(1, 255):
-        ip = f'{networkPrefix}.{i}'
-        response = os.system(f'ping -n 1 -w 100 {ip} > nul')
-        if response == 0:
-            activeIPs.append(ip)
-            if ip == ownIP:
-                textBox.insert(tk.END, f'IP {ip} is active (This is your own IP address)\n')
-            else:
-                textBox.insert(tk.END, f'IP {ip} is active\n')
-            textBox.update_idletasks()
+    def run(self):
+        try:
+            self.status_message = "Scanning Network"
+            self.dots = 0
+            self.timer.start(500)
 
-    textBox.insert(tk.END, '\nActive IPs with MAC addresses:\n')
-    arpTable = getArpTable()
-    for ip in activeIPs:
-        macAddress = arpTable.get(ip, 'MAC address not found')
-        if ip == ownIP:
-            textBox.insert(tk.END, f'IP: {ip} (This is your own IP address), MAC: {macAddress}\n')
-        else:
-            textBox.insert(tk.END, f'IP: {ip}, MAC: {macAddress}\n')
+            ownIP = self.getOwnIp()
+            if not ownIP:
+                self.output_signal.emit('Program is being shut down because your own IP could not be determined.')
+                return
 
-def getArpTable():
-    arpTable = {}
-    arpOutput = subprocess.check_output('arp -a', shell=True).decode('utf-8')
-    lines = arpOutput.splitlines()
-    for line in lines:
-        if line.strip().startswith('Interface:') or line.strip() == '':
-            continue
-        parts = line.split()
-        if len(parts) >= 2:
-            iPAddress = parts[0]
-            macAddress = parts[1]
-            arpTable[iPAddress] = macAddress
-    return arpTable
+            networkPrefix = self.getNetworkPrefix(ownIP)
+            activeIPs = []
 
-def getIpConfig():
-    try:
-        result = subprocess.run(['ipconfig'], capture_output=True, text=True, encoding='cp850')
-        textBox.delete(1.0, tk.END)
-        textBox.insert(tk.END, result.stdout)
-    except Exception as ex:
-        textBox.insert(tk.END, f'Error: {ex}')
+            self.status_signal.emit(f'Scanning IP range {networkPrefix}.1 to {networkPrefix}.254 ...')
+            for i in range(1, 255):
+                ip = f'{networkPrefix}.{i}'
+                response = subprocess.run(f'ping -n 1 -w 100 {ip} > nul', shell=True, capture_output=True)
+                if response.returncode == 0:
+                    activeIPs.append(ip)
+                    if ip == ownIP:
+                        self.output_signal.emit(f'IP {ip} is active (This is your own IP address)\n')
+                    else:
+                        self.output_signal.emit(f'IP {ip} is active\n')
 
-def getIpConfigAll():
-    try:
-        process = subprocess.Popen(['ipconfig', '/all'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='cp850')
-        output = ""
-        for line in process.stdout:
-            output += line
-            textBox.insert(tk.END, line)
-            textBox.update_idletasks()
-        textBox.delete(1.0, tk.END)
-        textBox.insert(tk.END, output)
-    except Exception as ex:
-        textBox.insert(tk.END, f'Error: {ex}')
+            self.output_signal.emit('\nActive IPs with MAC addresses:\n')
+            arpTable = self.getArpTable()
+            for ip in activeIPs:
+                macAddress = arpTable.get(ip, 'MAC address not found')
+                if ip == ownIP:
+                    self.output_signal.emit(f'IP: {ip} (This is your own IP address), MAC: {macAddress}\n')
+                else:
+                    self.output_signal.emit(f'IP: {ip}, MAC: {macAddress}\n')
 
-def runNetstatAn():
-    try:
-        result = subprocess.run(['netstat', '-an'], capture_output=True, text=True, encoding='cp850')
-        textBox.delete(1.0, tk.END)
-        textBox.insert(tk.END, result.stdout)
-    except Exception as ex:
-        textBox.insert(tk.END, f'Error: {ex}')
+            self.timer.stop()
+        except Exception as ex:
+            self.timer.stop()
+            self.output_signal.emit(f'Error during network scan: {ex}')
 
-def runNetstatO():
-    try:
-        result = subprocess.run(['netstat', '-o'], capture_output=True, text=True, encoding='cp850')
-        textBox.delete(1.0, tk.END)
-        textBox.insert(tk.END, result.stdout)
-    except Exception as ex:
-        textBox.insert(tk.END, f'Error: {ex}')
+    def updateStatus(self):
+        dots = '.' * (self.dots % 4)
+        self.status_signal.emit(f'{self.status_message}{dots}')
+        self.dots += 1
 
-                # GUI
-root = tk.Tk()
-root.title('IP GUI v.1.1')
+    def getOwnIp(self):
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.settimeout(1)
+            s.connect(('8.8.8.8', 80))
+            iPAddress = s.getsockname()[0]
+            s.close()
+            return iPAddress
+        except Exception as ex:
+            return None
 
-textBox = tk.Text(root, wrap='word', height=20, width=80)
-textBox.pack(padx=10, pady=10)
+    def getNetworkPrefix(self, iPAddress):
+        return '.'.join(iPAddress.split('.')[:-1])
 
-                # Buttons
-buttonIp = tk.Button(root, text='Show IPConfig', command=getIpConfig)
-buttonIp.pack(pady=5)
+    def getArpTable(self):
+        arpTable = {}
+        try:
+            arpOutput = subprocess.check_output('arp -a', shell=True).decode('utf-8')
+            lines = arpOutput.splitlines()
+            for line in lines:
+                if line.strip().startswith('Interface:') or line.strip() == '':
+                    continue
+                parts = line.split()
+                if len(parts) >= 2:
+                    iPAddress = parts[0]
+                    macAddress = parts[1]
+                    arpTable[iPAddress] = macAddress
+        except Exception as ex:
+            arpTable['Error'] = f'Error retrieving ARP table: {ex}'
+        return arpTable
 
-buttonIpAll = tk.Button(root, text='Show IPConfig -all', command=getIpConfigAll)
-buttonIpAll.pack(pady=5)
+class IpGui(QMainWindow):
+    def __init__(self):
+        super().__init__()
 
-buttonHosts = tk.Button(root, text='Show Hosts', command=scanNetwork)
-buttonHosts.pack(pady=5)
+        # Window Settings
+        self.setWindowTitle('IP GUI v.1.1')
+        self.setGeometry(100, 100, 800, 600)
+        self.setFixedSize(800, 600)
 
-buttonNetstatAn = tk.Button(root, text='Run netstat -an', command=runNetstatAn)
-buttonNetstatAn.pack(pady=5)
+        # Window Flags
+        self.setWindowFlags(Qt.WindowType.Window |
+                            Qt.WindowType.WindowTitleHint |
+                            Qt.WindowType.WindowMinimizeButtonHint |
+                            Qt.WindowType.WindowCloseButtonHint)
 
-buttonNetstatO = tk.Button(root, text='Run netstat -o', command=runNetstatO)
-buttonNetstatO.pack(pady=5)
+        # Style of the GUI
+        self.setStyleSheet("background-color: #d6e3f3;")
 
-                # Main Loop
-root.mainloop()
+        # Text box
+        self.textBox = QTextEdit(self)
+        self.textBox.setStyleSheet("color: #2e2e2e; background-color: #f0e5d8;")  # Wärmere Hintergrundfarbe
+        self.textBox.setFont(QFont("Consolas", 10))
+        self.textBox.setReadOnly(True)
+        self.textBox.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)  # Zeilenumbruch aktivieren
+
+        # Buttons
+        buttonStyle = "background-color: rgba(64, 64, 64, 0.8); color: #ffffff;"  # Dunkles Grau, leicht transparent
+
+        buttonIp = QPushButton('Show IPConfig', self)
+        buttonIp.clicked.connect(lambda: self.runCommand(['ipconfig'], 'Führe ipconfig aus'))
+        buttonIp.setStyleSheet(buttonStyle)
+
+        buttonIpAll = QPushButton('Show IPConfig -all', self)
+        buttonIpAll.clicked.connect(lambda: self.runCommand(['ipconfig', '/all'], 'Führe ipconfig /all aus'))
+        buttonIpAll.setStyleSheet(buttonStyle)
+
+        buttonHosts = QPushButton('Show Hosts', self)
+        buttonHosts.clicked.connect(lambda: self.runNetworkScan('Führe Netzwerkscan aus'))
+        buttonHosts.setStyleSheet(buttonStyle)
+
+        buttonNetstatAn = QPushButton('Run netstat -an', self)
+        buttonNetstatAn.clicked.connect(lambda: self.runCommand(['netstat', '-an'], 'Führe netstat -an aus'))
+        buttonNetstatAn.setStyleSheet(buttonStyle)
+
+        buttonNetstatO = QPushButton('Run netstat -o', self)
+        buttonNetstatO.clicked.connect(lambda: self.runCommand(['netstat', '-o'], 'Führe netstat -o aus'))
+        buttonNetstatO.setStyleSheet(buttonStyle)
+
+        # Layouts
+        buttonLayout = QHBoxLayout()
+        buttonLayout.addWidget(buttonIp)
+        buttonLayout.addWidget(buttonIpAll)
+        buttonLayout.addWidget(buttonHosts)
+        buttonLayout.addWidget(buttonNetstatAn)
+        buttonLayout.addWidget(buttonNetstatO)
+
+        mainLayout = QVBoxLayout()
+        mainLayout.addWidget(self.textBox, 3)
+        mainLayout.addLayout(buttonLayout, 1)
+
+        container = QWidget()
+        container.setLayout(mainLayout)
+        self.setCentralWidget(container)
+
+        # status bar
+        self.statusBar().showMessage('Ready')
+
+        # timer for stati
+        self.statusTimer = QTimer()
+        self.statusTimer.timeout.connect(self.updateStatusMessage)
+        self.statusMessage = ""
+        self.statusDots = 0
+
+    def runCommand(self, command, status_message):
+        self.statusMessage = status_message
+        self.statusDots = 0
+        self.updateStatusMessage()
+        self.statusTimer.start(500)  # Update alle 500ms
+        self.commandThread = CommandThread(command)
+        self.commandThread.output_signal.connect(self.commandFinished)
+        self.commandThread.start()
+
+    def runNetworkScan(self, status_message):
+        self.statusMessage = status_message
+        self.statusDots = 0
+        self.updateStatusMessage()
+        self.statusTimer.start(500)  # Update alle 500ms
+
+        # Create and start NetworkScanThread
+        self.networkScanThread = NetworkScanThread()
+        self.networkScanThread.output_signal.connect(self.commandFinished)
+        self.networkScanThread.status_signal.connect(self.updateStatusMessageForNetworkScan)
+        self.networkScanThread.start()
+
+    def updateStatusMessage(self):
+        dots = '.' * (self.statusDots % 4)
+        self.textBox.setPlainText(f'{self.statusMessage}{dots}')
+        self.statusDots += 1
+
+    def updateStatusMessageForNetworkScan(self, message):
+        self.textBox.setPlainText(message)
+
+    def commandFinished(self, output):
+        self.statusTimer.stop()
+        self.textBox.append(output)
+
+if __name__ == '__main__':
+    app = QApplication(sys.argv)
+    window = IpGui()
+    window.show()
+    sys.exit(app.exec())
