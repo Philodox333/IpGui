@@ -1,15 +1,16 @@
-# IpGui.py
-# @Philodox333
+# IPGui
+# @ETrommer
 
-# import
+        #Import
 import sys
 import subprocess
 import socket
-from PyQt6.QtWidgets import QApplication, QMainWindow, QTextEdit, QVBoxLayout, QPushButton, QWidget, QHBoxLayout
-from PyQt6.QtGui import QFont
-from PyQt6.QtCore import QThread, pyqtSignal, QTimer, Qt
+from PyQt6.QtWidgets import QApplication, QMainWindow, QTextEdit, QVBoxLayout, QPushButton, QWidget, QHBoxLayout, QMenuBar, QMenu, QComboBox, QFileDialog
+from PyQt6.QtGui import QAction, QFont
+from PyQt6.QtCore import QThread, pyqtSignal
 
-#main
+
+        #Hauptprogramm
 class CommandThread(QThread):
     output_signal = pyqtSignal(str)
 
@@ -28,37 +29,31 @@ class NetworkScanThread(QThread):
     output_signal = pyqtSignal(str)
     status_signal = pyqtSignal(str)
 
-    def __init__(self):
-        super().__init__()
-        self.timer = QTimer()
-        self.timer.timeout.connect(self.updateStatus)
-
     def run(self):
         try:
-            self.status_message = "Scanning Network"
-            self.dots = 0
-            self.timer.start(500)
-
             ownIP = self.getOwnIp()
             if not ownIP:
-                self.output_signal.emit('Program is being shut down because your own IP could not be determined.')
+                self.output_signal.emit('Error: Own IP address could not be retrieved')
                 return
 
             networkPrefix = self.getNetworkPrefix(ownIP)
             activeIPs = []
 
-            self.status_signal.emit(f'Scanning IP range {networkPrefix}.1 to {networkPrefix}.254 ...')
+            self.status_signal.emit(f'Scan IPs from {networkPrefix}.1 to {networkPrefix}.254 ...')
+
             for i in range(1, 255):
                 ip = f'{networkPrefix}.{i}'
-                response = subprocess.run(f'ping -n 1 -w 100 {ip} > nul', shell=True, capture_output=True)
-                if response.returncode == 0:
+                process = subprocess.Popen(f'ping -n 1 -w 100 {ip}', shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                process.wait()  # Warten, bis der Ping-Befehl abgeschlossen ist
+
+                if process.returncode == 0:
                     activeIPs.append(ip)
                     if ip == ownIP:
-                        self.output_signal.emit(f'IP {ip} is active (This is your own IP address)\n')
+                        self.output_signal.emit(f'IP {ip} ist aktiv (This is your own IP address)\n')
                     else:
-                        self.output_signal.emit(f'IP {ip} is active\n')
+                        self.output_signal.emit(f'IP {ip} is aktive\n')
 
-            self.output_signal.emit('\nActive IPs with MAC addresses:\n')
+            self.output_signal.emit('\nAktive IPs with MAC adresses\n')
             arpTable = self.getArpTable()
             for ip in activeIPs:
                 macAddress = arpTable.get(ip, 'MAC address not found')
@@ -66,16 +61,8 @@ class NetworkScanThread(QThread):
                     self.output_signal.emit(f'IP: {ip} (This is your own IP address), MAC: {macAddress}\n')
                 else:
                     self.output_signal.emit(f'IP: {ip}, MAC: {macAddress}\n')
-
-            self.timer.stop()
         except Exception as ex:
-            self.timer.stop()
-            self.output_signal.emit(f'Error during network scan: {ex}')
-
-    def updateStatus(self):
-        dots = '.' * (self.dots % 4)
-        self.status_signal.emit(f'{self.status_message}{dots}')
-        self.dots += 1
+            self.output_signal.emit(f'Error while trying to scan network: {ex}')
 
     def getOwnIp(self):
         try:
@@ -112,57 +99,80 @@ class IpGui(QMainWindow):
     def __init__(self):
         super().__init__()
 
-        # Window Settings
-        self.setWindowTitle('IP GUI v.1.1')
+        # Fenster-Einstellungen
+        self.setWindowTitle('IP GUI v.1.3')
         self.setGeometry(100, 100, 800, 600)
         self.setFixedSize(800, 600)
 
-        # Window Flags
-        self.setWindowFlags(Qt.WindowType.Window |
-                            Qt.WindowType.WindowTitleHint |
-                            Qt.WindowType.WindowMinimizeButtonHint |
-                            Qt.WindowType.WindowCloseButtonHint)
+        # Menüleiste erstellen
+        self.menuBar = self.menuBar()
+        self.createMenus()
 
-        # Style of the GUI
-        self.setStyleSheet("background-color: #d6e3f3;")
+        # Stile für die GUI
+        self.setStyleSheet('''
+            QMainWindow {
+                background-color: rgba(10, 10, 10, 230);  # Leicht transparentes dunkles Grau
+            }
+            QTextEdit {
+                background-color: rgba(255, 255, 255, 200);
+                color: #0ff;
+                border: 1px solid #00f;
+                border-radius: 10px;
+                padding: 5px;
+            }
+            QPushButton {
+                background-color: rgba(32, 32, 32, 200);
+                color: #0ff;
+                border: 1px solid #00f;
+                border-radius: 10px;
+                padding: 10px;
+            }
+            QPushButton:hover {
+                background-color: rgba(32, 32, 32, 220);
+            }
+        ''')
 
-        # Text box
+        # Textfeld
         self.textBox = QTextEdit(self)
-        self.textBox.setStyleSheet("color: #2e2e2e; background-color: #f0e5d8;")  # Wärmere Hintergrundfarbe
-        self.textBox.setFont(QFont("Consolas", 10))
+        self.textBox.setFont(QFont('Consolas', 10))
         self.textBox.setReadOnly(True)
-        self.textBox.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)  # Zeilenumbruch aktivieren
+        self.textBox.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
 
         # Buttons
-        buttonStyle = "background-color: rgba(64, 64, 64, 0.8); color: #ffffff;"  # Dunkles Grau, leicht transparent
-
-        buttonIp = QPushButton('Show IPConfig', self)
-        buttonIp.clicked.connect(lambda: self.runCommand(['ipconfig'], 'Führe ipconfig aus'))
-        buttonIp.setStyleSheet(buttonStyle)
-
-        buttonIpAll = QPushButton('Show IPConfig -all', self)
-        buttonIpAll.clicked.connect(lambda: self.runCommand(['ipconfig', '/all'], 'Führe ipconfig /all aus'))
-        buttonIpAll.setStyleSheet(buttonStyle)
-
         buttonHosts = QPushButton('Show Hosts', self)
         buttonHosts.clicked.connect(lambda: self.runNetworkScan('Führe Netzwerkscan aus'))
-        buttonHosts.setStyleSheet(buttonStyle)
 
-        buttonNetstatAn = QPushButton('Run netstat -an', self)
-        buttonNetstatAn.clicked.connect(lambda: self.runCommand(['netstat', '-an'], 'Führe netstat -an aus'))
-        buttonNetstatAn.setStyleSheet(buttonStyle)
+        # Dropdown-Menü für netstat
+        self.netstatComboBox = QComboBox(self)
+        self.netstatComboBox.addItems([
+            'Run netstat',
+            'Run netstat -a',
+            'Run netstat -b',
+            'Run netstat -n',
+            'Run netstat -o',
+            'Run netstat -r',
+            'Run netstat -s'
+        ])
+        self.netstatComboBox.currentIndexChanged.connect(self.runNetstat)
 
-        buttonNetstatO = QPushButton('Run netstat -o', self)
-        buttonNetstatO.clicked.connect(lambda: self.runCommand(['netstat', '-o'], 'Führe netstat -o aus'))
-        buttonNetstatO.setStyleSheet(buttonStyle)
+        # Dropdown-Menü für ipconfig
+        self.ipconfigComboBox = QComboBox(self)
+        self.ipconfigComboBox.addItems([
+            'Run ipconfig',
+            'Run ipconfig -all',
+            'Run ipconfig -release',
+            'Run ipconfig -renew',
+            'Run ipconfig -displaydns',
+            'Run ipconfig -flushdns',
+            'Run ipconfig -registerdns'
+        ])
+        self.ipconfigComboBox.currentIndexChanged.connect(self.runIpConfig)
 
         # Layouts
         buttonLayout = QHBoxLayout()
-        buttonLayout.addWidget(buttonIp)
-        buttonLayout.addWidget(buttonIpAll)
         buttonLayout.addWidget(buttonHosts)
-        buttonLayout.addWidget(buttonNetstatAn)
-        buttonLayout.addWidget(buttonNetstatO)
+        buttonLayout.addWidget(self.netstatComboBox)
+        buttonLayout.addWidget(self.ipconfigComboBox)
 
         mainLayout = QVBoxLayout()
         mainLayout.addWidget(self.textBox, 3)
@@ -172,50 +182,86 @@ class IpGui(QMainWindow):
         container.setLayout(mainLayout)
         self.setCentralWidget(container)
 
-        # status bar
+        # Statusleiste
         self.statusBar().showMessage('Ready')
+        self.statusBar().setStyleSheet('background-color: rgba(32, 32, 32, 230); color: #0ff; border-top: 1px solid #00f;')
 
-        # timer for stati
-        self.statusTimer = QTimer()
-        self.statusTimer.timeout.connect(self.updateStatusMessage)
-        self.statusMessage = ""
-        self.statusDots = 0
+    def createMenus(self):
+        # Menü Datei
+        fileMenu = self.menuBar.addMenu('File')
 
-    def runCommand(self, command, status_message):
-        self.statusMessage = status_message
-        self.statusDots = 0
+        # Save As .txt Aktion
+        saveAction = QAction('Save as .txt', self)
+        saveAction.triggered.connect(self.saveToFile)
+        fileMenu.addAction(saveAction)
+
+        # Exit Aktion
+        exitAction = QAction('Exit', self)
+        exitAction.triggered.connect(self.close)
+        fileMenu.addAction(exitAction)
+
+    def runCommand(self, command, statusMessage):
+        self.statusMessage = statusMessage
         self.updateStatusMessage()
-        self.statusTimer.start(500)  # Update alle 500ms
         self.commandThread = CommandThread(command)
         self.commandThread.output_signal.connect(self.commandFinished)
         self.commandThread.start()
 
-    def runNetworkScan(self, status_message):
-        self.statusMessage = status_message
-        self.statusDots = 0
+    def runNetworkScan(self, statusMessage):
+        self.statusMessage = statusMessage
         self.updateStatusMessage()
-        self.statusTimer.start(500)  # Update alle 500ms
-
-        # Create and start NetworkScanThread
         self.networkScanThread = NetworkScanThread()
         self.networkScanThread.output_signal.connect(self.commandFinished)
-        self.networkScanThread.status_signal.connect(self.updateStatusMessageForNetworkScan)
+        self.networkScanThread.status_signal.connect(self.statusMessageUpdated)
         self.networkScanThread.start()
 
-    def updateStatusMessage(self):
-        dots = '.' * (self.statusDots % 4)
-        self.textBox.setPlainText(f'{self.statusMessage}{dots}')
-        self.statusDots += 1
+    def runNetstat(self, index):
+        netstatCommands = {
+            0: ['netstat'],
+            1: ['netstat', '-a'],
+            2: ['netstat', '-b'],
+            3: ['netstat', '-n'],
+            4: ['netstat', '-o'],
+            5: ['netstat', '-r'],
+            6: ['netstat', '-s'],
+        }
+        command = netstatCommands.get(index)
+        if command:
+            self.runCommand(command, 'Running netstat')
 
-    def updateStatusMessageForNetworkScan(self, message):
-        self.textBox.setPlainText(message)
+    def runIpConfig(self, index):
+        ipconfigCommands = {
+            0: ['ipconfig'],
+            1: ['ipconfig', '/all'],
+            2: ['ipconfig', '/release'],
+            3: ['ipconfig', '/renew'],
+            4: ['ipconfig', '/displaydns'],
+            5: ['ipconfig', '/flushdns'],
+            6: ['ipconfig', '/registerdns'],
+        }
+        command = ipconfigCommands.get(index)
+        if command:
+            self.runCommand(command, 'Running ipconfig')
 
     def commandFinished(self, output):
-        self.statusTimer.stop()
         self.textBox.append(output)
+        self.statusMessage = 'Ready'
+        self.updateStatusMessage()
+
+    def statusMessageUpdated(self, status):
+        self.statusBar().showMessage(status)
+
+    def updateStatusMessage(self):
+        self.statusBar().showMessage(self.statusMessage)
+
+    def saveToFile(self):
+        filename, _ = QFileDialog.getSaveFileName(self, 'Save File', '', 'Text Files (*.txt)')
+        if filename:
+            with open(filename, 'w') as f:
+                f.write(self.textBox.toPlainText())
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
-    window = IpGui()
-    window.show()
+    gui = IpGui()
+    gui.show()
     sys.exit(app.exec())
